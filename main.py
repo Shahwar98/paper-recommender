@@ -7,34 +7,34 @@ from sentence_transformers import SentenceTransformer
 from huggingface_hub import hf_hub_download
 import os
 
-app = FastAPI(title="Paper Recommendation API", version="1.0.0")
+app = FastAPI(
+    title="Paper Recommendation API",
+    version="1.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc"
+)
 
-# Download large files from HF dataset hub if not present
 DATA_REPO = "shahwar98/paper-recommender-data"
 
 if not os.path.exists("papers.parquet"):
-    print("Downloading papers.parquet...")
     hf_hub_download(repo_id=DATA_REPO, filename="papers.parquet",
                     repo_type="dataset", local_dir=".")
-
 if not os.path.exists("tfidf_vectorizer.pkl"):
-    print("Downloading tfidf_vectorizer.pkl...")
     hf_hub_download(repo_id=DATA_REPO, filename="tfidf_vectorizer.pkl",
                     repo_type="dataset", local_dir=".")
-
 if not os.path.exists("tfidf_matrix_sparse.npz"):
-    print("Downloading tfidf_matrix_sparse.npz...")
     hf_hub_download(repo_id=DATA_REPO, filename="tfidf_matrix_sparse.npz",
                     repo_type="dataset", local_dir=".")
 
-# Load artifacts
-print("Loading artifacts...")
 df = pd.read_parquet("papers.parquet")
 with open("tfidf_vectorizer.pkl", "rb") as f:
     vectorizer = pickle.load(f)
 tfidf_matrix = sp.load_npz("tfidf_matrix_sparse.npz")
 st_model = SentenceTransformer("all-MiniLM-L6-v2")
-print(f"Ready — {len(df):,} papers loaded")
+
+@app.get("/")
+def root():
+    return {"message": "Paper Recommendation API", "docs": "/docs", "health": "/health"}
 
 @app.get("/health")
 def health():
@@ -44,12 +44,10 @@ def health():
 def recommend(paper_idx: int, k: int = 10, method: str = "hybrid"):
     if paper_idx < 0 or paper_idx >= len(df):
         raise HTTPException(status_code=404, detail="Paper not found")
-
     query_vec = tfidf_matrix[paper_idx]
     scores = cosine_similarity(query_vec, tfidf_matrix).flatten()
     scores[paper_idx] = -1
     top_50 = np.argsort(scores)[::-1][:50]
-
     if method == "tfidf":
         top_k = top_50[:k]
         return {
@@ -63,7 +61,6 @@ def recommend(paper_idx: int, k: int = 10, method: str = "hybrid"):
                 for i, idx in enumerate(top_k)
             ]
         }
-
     query_text = df.loc[paper_idx, "combined_text"]
     cand_texts = [df.loc[int(i), "combined_text"] for i in top_50]
     embeddings = st_model.encode([query_text] + cand_texts,
@@ -71,7 +68,6 @@ def recommend(paper_idx: int, k: int = 10, method: str = "hybrid"):
     query_emb = embeddings[0]
     cand_embs = embeddings[1:]
     sem_scores = (cand_embs @ query_emb).tolist()
-
     results = []
     for i, idx in enumerate(top_50):
         results.append({
@@ -83,7 +79,6 @@ def recommend(paper_idx: int, k: int = 10, method: str = "hybrid"):
     results.sort(key=lambda x: x["score"], reverse=True)
     for i, r in enumerate(results[:k]):
         r["rank"] = i + 1
-
     return {
         "query": {"idx": paper_idx, "title": df.loc[paper_idx, "title"],
                   "category": df.loc[paper_idx, "primary_category"]},
