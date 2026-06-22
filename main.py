@@ -17,6 +17,11 @@ if not os.path.exists("papers.parquet"):
     hf_hub_download(repo_id=DATA_REPO, filename="papers.parquet",
                     repo_type="dataset", local_dir=".")
 
+if not os.path.exists("tfidf_vectorizer.pkl"):
+    print("Downloading tfidf_vectorizer.pkl...")
+    hf_hub_download(repo_id=DATA_REPO, filename="tfidf_vectorizer.pkl",
+                    repo_type="dataset", local_dir=".")
+
 if not os.path.exists("tfidf_matrix_sparse.npz"):
     print("Downloading tfidf_matrix_sparse.npz...")
     hf_hub_download(repo_id=DATA_REPO, filename="tfidf_matrix_sparse.npz",
