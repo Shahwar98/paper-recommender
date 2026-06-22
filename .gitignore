@@ -2,3 +2,5 @@
 *.db
 __pycache__/
 .env
+papers.parquet
+tfidf_matrix_sparse.npz
