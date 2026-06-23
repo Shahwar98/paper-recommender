@@ -194,7 +194,7 @@ async def ui():
 <body>
     <div class="header">
         <h1>🔬 Scientific Paper Recommender</h1>
-        <p>Search across 50,000 arXiv papers using AI-powered semantic search</p>
+        <p>Search across 2,000+ recent ML/CS papers using AI-powered semantic search</p>
     </div>
     <div class="container">
         <div class="search-box">
@@ -225,7 +225,7 @@ async def ui():
             if (!q) return;
             
             document.getElementById("results").innerHTML = 
-                '<div class="loading">🔍 Searching 50,000 papers...</div>';
+                '<div class="loading">🔍 Searching papers...</div>';
 
             try {
                 const res = await fetch(`/search?q=${encodeURIComponent(q)}&method=hybrid&k=8`);
