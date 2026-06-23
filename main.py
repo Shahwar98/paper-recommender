@@ -33,9 +33,10 @@ with open("tfidf_vectorizer.pkl", "rb") as f:
 tfidf_matrix = sp.load_npz("tfidf_matrix_sparse.npz")
 st_model = SentenceTransformer("all-MiniLM-L6-v2")
 
-@app.get("/")
+@app.get("/", response_class=HTMLResponse)
 def root():
-    return {"message": "Paper Recommendation API", "docs": "/docs", "health": "/health"}
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="/ui")
 
 @app.get("/health")
 def health():
@@ -97,11 +98,58 @@ def get_paper(paper_idx: int):
             "category": row["primary_category"],
             "year": int(row["year"]) if pd.notna(row["year"]) else None}
 
+
 @app.get("/stats")
 def stats():
     return {"total_papers": len(df),
             "categories": df["primary_category"].nunique(),
             "top_categories": df["primary_category"].value_counts().head(5).to_dict()}
+
+@app.get("/search")
+def search_by_text(q: str, k: int = 10, method: str = "hybrid"):
+    """Search for papers by free text query"""
+    if not q.strip():
+        raise HTTPException(status_code=400, detail="Query cannot be empty")
+    
+    # Transform query using TF-IDF
+    query_vec = vectorizer.transform([q.lower().strip()])
+    scores = cosine_similarity(query_vec, tfidf_matrix).flatten()
+    top_50 = np.argsort(scores)[::-1][:50]
+    
+    if method == "tfidf":
+        return {
+            "query": q,
+            "method": "tfidf",
+            "recommendations": [
+                {"rank": i+1, "title": df.loc[int(idx), "title"],
+                 "category": df.loc[int(idx), "primary_category"],
+                 "score": round(float(scores[idx]), 4)}
+                for i, idx in enumerate(top_50[:k])
+            ]
+        }
+    
+    # Semantic reranking
+    cand_texts = [df.loc[int(i), "combined_text"] for i in top_50]
+    embeddings = st_model.encode([q] + cand_texts,
+                                  normalize_embeddings=True, batch_size=32)
+    query_emb = embeddings[0]
+    cand_embs = embeddings[1:]
+    sem_scores = (cand_embs @ query_emb).tolist()
+    
+    results = []
+    for i, idx in enumerate(top_50):
+        results.append({
+            "rank": 0,
+            "title": df.loc[int(idx), "title"],
+            "category": df.loc[int(idx), "primary_category"],
+            "arxiv_id": df.loc[int(idx), "id"],
+            "score": round(0.3 * float(scores[idx]) + 0.7 * sem_scores[i], 4)
+        })
+    results.sort(key=lambda x: x["score"], reverse=True)
+    for i, r in enumerate(results[:k]):
+        r["rank"] = i + 1
+    
+    return {"query": q, "method": method, "recommendations": results[:k]}
 
 
 @app.get("/ui", response_class=HTMLResponse)
@@ -110,75 +158,105 @@ async def ui():
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Paper Recommender</title>
+    <title>Scientific Paper Recommender</title>
     <style>
-        body { font-family: Arial, sans-serif; max-width: 800px; margin: 50px auto; padding: 20px; }
-        h1 { color: #2c3e50; }
-        input, select, button { padding: 10px; margin: 5px; font-size: 16px; }
-        button { background: #3498db; color: white; border: none; cursor: pointer; border-radius: 5px; }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #f5f7fa; }
+        .header { background: #2c3e50; color: white; padding: 30px 20px; text-align: center; }
+        .header h1 { font-size: 28px; margin-bottom: 8px; }
+        .header p { opacity: 0.8; font-size: 15px; }
+        .container { max-width: 800px; margin: 30px auto; padding: 0 20px; }
+        .search-box { background: white; padding: 25px; border-radius: 12px; 
+                      box-shadow: 0 2px 10px rgba(0,0,0,0.08); margin-bottom: 20px; }
+        .search-row { display: flex; gap: 10px; }
+        input[type=text] { flex: 1; padding: 12px 16px; font-size: 16px; 
+                           border: 2px solid #e0e0e0; border-radius: 8px; outline: none; }
+        input[type=text]:focus { border-color: #3498db; }
+        button { background: #3498db; color: white; border: none; padding: 12px 24px; 
+                 font-size: 16px; border-radius: 8px; cursor: pointer; white-space: nowrap; }
         button:hover { background: #2980b9; }
-        .card { border: 1px solid #ddd; padding: 15px; margin: 10px 0; border-radius: 8px; }
-        .rank { font-size: 24px; font-weight: bold; color: #3498db; }
-        .title { font-size: 16px; font-weight: bold; margin: 5px 0; }
-        .meta { color: #666; font-size: 14px; }
+        .examples { margin-top: 12px; font-size: 13px; color: #666; }
+        .examples span { color: #3498db; cursor: pointer; margin-right: 12px; }
+        .examples span:hover { text-decoration: underline; }
+        .card { background: white; padding: 20px; margin-bottom: 12px; border-radius: 10px;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.06); display: flex; gap: 15px; }
+        .rank { font-size: 28px; font-weight: bold; color: #3498db; min-width: 40px; }
+        .content .title { font-size: 16px; font-weight: 600; color: #2c3e50; margin-bottom: 6px; }
+        .content .meta { font-size: 13px; color: #888; }
         .score { color: #27ae60; font-weight: bold; }
-        #query-info { background: #f8f9fa; padding: 15px; border-radius: 8px; margin: 15px 0; }
-        #error { color: red; }
+        .loading { text-align: center; padding: 40px; color: #666; font-size: 18px; }
+        .query-info { background: #eaf4fb; border-left: 4px solid #3498db; 
+                      padding: 12px 16px; border-radius: 6px; margin-bottom: 16px; font-size: 14px; }
+        a { color: #3498db; text-decoration: none; }
+        a:hover { text-decoration: underline; }
     </style>
 </head>
 <body>
-    <h1>🔬 Scientific Paper Recommender</h1>
-    <p>Enter a paper ID (0–49999) to find similar arXiv papers.</p>
-
-    <div>
-        <input type="number" id="paper-id" placeholder="Paper ID (e.g. 100)" min="0" max="49999" value="100"/>
-        <select id="method">
-            <option value="hybrid">Hybrid (Best)</option>
-            <option value="tfidf">TF-IDF (Fast)</option>
-        </select>
-        <input type="number" id="k" placeholder="Results" value="5" min="1" max="20"/>
-        <button onclick="recommend()">Find Similar Papers</button>
+    <div class="header">
+        <h1>🔬 Scientific Paper Recommender</h1>
+        <p>Search across 50,000 arXiv papers using AI-powered semantic search</p>
+    </div>
+    <div class="container">
+        <div class="search-box">
+            <div class="search-row">
+                <input type="text" id="query" placeholder="e.g. deep learning for protein folding" 
+                       onkeypress="if(event.key==='Enter') search()"/>
+                <button onclick="search()">Search</button>
+            </div>
+            <div class="examples">
+                Try: 
+                <span onclick="setQuery('transformer attention mechanism NLP')">transformers NLP</span>
+                <span onclick="setQuery('reinforcement learning robotics')">RL robotics</span>
+                <span onclick="setQuery('graph neural networks molecules')">graph neural nets</span>
+                <span onclick="setQuery('diffusion models image generation')">diffusion models</span>
+            </div>
+        </div>
+        <div id="results"></div>
     </div>
 
-    <div id="query-info" style="display:none"></div>
-    <div id="error"></div>
-    <div id="results"></div>
-
     <script>
-        async function recommend() {
-            const idx = document.getElementById("paper-id").value;
-            const method = document.getElementById("method").value;
-            const k = document.getElementById("k").value;
+        function setQuery(text) {
+            document.getElementById("query").value = text;
+            search();
+        }
 
-            document.getElementById("results").innerHTML = "Loading...";
-            document.getElementById("error").innerHTML = "";
-            document.getElementById("query-info").style.display = "none";
+        async function search() {
+            const q = document.getElementById("query").value.trim();
+            if (!q) return;
+            
+            document.getElementById("results").innerHTML = 
+                '<div class="loading">🔍 Searching 50,000 papers...</div>';
 
             try {
-                const res = await fetch(`/recommend/${idx}?method=${method}&k=${k}`);
-                if (!res.ok) throw new Error("Paper not found");
+                const res = await fetch(`/search?q=${encodeURIComponent(q)}&method=hybrid&k=8`);
+                if (!res.ok) throw new Error("Search failed");
                 const data = await res.json();
 
-                document.getElementById("query-info").style.display = "block";
-                document.getElementById("query-info").innerHTML = `
-                    <strong>Query Paper #${data.query.idx}</strong><br>
-                    📄 ${data.query.title}<br>
-                    🏷️ Category: ${data.query.category}
-                `;
-
-                document.getElementById("results").innerHTML = data.recommendations.map(r => `
-                    <div class="card">
-                        <span class="rank">#${r.rank}</span>
-                        <div class="title">${r.title}</div>
-                        <div class="meta">
-                            🏷️ ${r.category} &nbsp;|&nbsp;
-                            <span class="score">Score: ${r.score}</span>
-                        </div>
+                document.getElementById("results").innerHTML = `
+                    <div class="query-info">
+                        Showing top results for: <strong>"${data.query}"</strong> 
+                        &nbsp;·&nbsp; ${data.recommendations.length} papers found
                     </div>
-                `).join("");
+                    ${data.recommendations.map(r => `
+                        <div class="card">
+                            <div class="rank">#${r.rank}</div>
+                            <div class="content">
+                                <div class="title">
+                                    <a href="https://arxiv.org/abs/${r.arxiv_id}" target="_blank">
+                                        ${r.title}
+                                    </a>
+                                </div>
+                                <div class="meta">
+                                    🏷️ ${r.category} &nbsp;|&nbsp;
+                                    <span class="score">Score: ${r.score}</span>
+                                </div>
+                            </div>
+                        </div>
+                    `).join("")}
+                `;
             } catch(e) {
-                document.getElementById("error").innerHTML = "Error: " + e.message;
-                document.getElementById("results").innerHTML = "";
+                document.getElementById("results").innerHTML = 
+                    `<div style="color:red;padding:20px">Error: ${e.message}</div>`;
             }
         }
     </script>
