@@ -90,5 +90,4 @@ docker run -p 8000:8000 paper-recommender
 ## Author
 
 Shahwar Ahmed Khaleel
-MS ECE, Purdue University Northwest (GPA 3.94)
 [GitHub](https://github.com/Shahwar98) | [LinkedIn](https://www.linkedin.com/in/shahwar-ahmed-khaleel-621524194/)
